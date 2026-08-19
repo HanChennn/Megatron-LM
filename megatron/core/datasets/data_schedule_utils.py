@@ -757,7 +757,7 @@ def next_hdp_group_packing_aware(
                 )
                 new_sample_ids_per_gpu[rank] = list(sample_ids_per_gpu[group_end_rank])
 
-            for idx, work in enumerate(work_to_push):
+            for idx, work in enumerate(work_to_push):  # push the middle work to the new ranks after the expanded group
                 target_rank = group_end_rank + needed_count + 1 + idx
                 new_micro_batches[target_rank] = work
                 new_exec_times[target_rank] = exec_times_to_push[idx]
@@ -783,6 +783,9 @@ def next_hdp_group_packing_aware(
         return False
 
     def fill_with_full_dpxcp_group() -> None:
+        # Fill all empty ranks with the same microbatch as the first non-empty DPxCP rank.
+        # This is to put as many sequences as possible into all ranks
+        # and avoid empty ranks, which is most straightforward for non-power-of-two DPxCP layouts.
         nonlocal micro_batches, exec_times, sample_ids_per_gpu, leftovers
 
         selected: List[Tuple[int, int]] = []

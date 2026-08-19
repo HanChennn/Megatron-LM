@@ -110,7 +110,7 @@ MODEL_ARGS=(
     --attention-dropout 0.0
     --hidden-dropout 0.0
     --transformer-impl transformer_engine
-    --attention-backend flash
+    --attention-backend fused
     --moe-token-dispatcher-type "$MOE_TOKEN_DISPATCHER_TYPE"
 )
 
