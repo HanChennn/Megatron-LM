@@ -1812,6 +1812,28 @@ class TEDotProductAttention(te.pytorch.DotProductAttention):
                 ), "TEDotProductAttention pg_collection must have hierarchical cp pg"
         self._tp_group = pg_collection.tp
 
+        # The caller has resolved the per-layer communication type and KV
+        # replication. DCP may use a smaller group; MLA/variants need real tensors.
+        if (
+            cp_comm_type == "a2a"
+            and config.context_parallel_size > 1
+            and not config.dynamic_context_parallel
+            and not config.multi_latent_attention
+            and config.experimental_attention_variant is None
+        ):
+            tp_size = (
+                get_pg_size(pg_collection.tp)
+                if pg_collection.tp is not None
+                else config.tensor_model_parallel_size
+            )
+            kv_heads = max(1, config.num_query_groups // tp_size)
+            self._validate_a2a_head_counts(
+                config.num_attention_heads // tp_size,
+                kv_heads,
+                kv_heads,
+                get_pg_size(pg_collection.cp),
+            )
+
         if is_te_min_version("0.10.0"):
             extra_kwargs["attention_type"] = attention_type
             # older version don't need attention_type
@@ -1821,7 +1843,9 @@ class TEDotProductAttention(te.pytorch.DotProductAttention):
 
         # This check is important as CP config can be disabled while having a valid CP group
         # Example - Disabling CP for encoder while a valid CP group exists for decoder
-        if self.config.context_parallel_size > 1:
+        if self.config.context_parallel_size > 1 or (
+            self.config.dynamic_context_parallel and cp_comm_type == "a2a"
+        ):
             assert is_te_min_version(
                 "1.0.0"
             ), "Only Transformer-Engine version >= 1.0.0 supports context parallelism!"
@@ -1936,6 +1960,25 @@ class TEDotProductAttention(te.pytorch.DotProductAttention):
             **extra_kwargs,
         )
 
+    def _validate_a2a_head_counts(
+        self, q_heads: int, k_heads: int, v_heads: int, a2a_size: int
+    ) -> None:
+        """Validate pure A2A only; hierarchical A2A+P2P uses a different subgroup."""
+        if any(heads % a2a_size for heads in (q_heads, k_heads, v_heads)):
+            tp_size = (
+                get_pg_size(self._tp_group)
+                if self._tp_group is not None
+                else self.config.tensor_model_parallel_size
+            )
+            raise ValueError(
+                "cp_comm_type='a2a' requires TP-local Q/K/V head counts to be divisible "
+                "by the effective A2A group size. "
+                f"TP={tp_size}, local_q_heads={q_heads}, local_k_heads={k_heads}, "
+                f"local_v_heads={v_heads}, configured_cp_size={self.config.context_parallel_size}, "
+                f"effective_a2a_size={a2a_size}. "
+                "Choose a compatible TP/CP configuration or explicitly select p2p."
+            )
+
     def forward(
         self,
         query: Tensor,
@@ -1948,6 +1991,21 @@ class TEDotProductAttention(te.pytorch.DotProductAttention):
         num_splits: Optional[int] = None,
     ) -> torch.Tensor:
         """Forward."""
+        if self.cp_comm_type == "a2a":
+            effective_cp_group = self.cp_group
+            if packed_seq_params is not None and packed_seq_params.local_cp_size is not None:
+                if packed_seq_params.local_cp_size == 1:
+                    effective_cp_group = None
+                else:
+                    assert (
+                        packed_seq_params.cp_group is not None
+                    ), "cp_group is not set in packed_seq_params for dynamic CP"
+                    effective_cp_group = packed_seq_params.cp_group
+            # Tensor shapes and group metadata only: validate before mutating TE state.
+            self._validate_a2a_head_counts(
+                query.shape[-2], key.shape[-2], value.shape[-2], get_pg_size(effective_cp_group)
+            )
+
         # Save TE's current CP group before potential DCP switch (for restore at end).
         _te_orig_cp_group = self.cp_group
         _te_orig_cp_global_ranks = self.cp_global_ranks
@@ -2064,11 +2122,7 @@ class TEDotProductAttention(te.pytorch.DotProductAttention):
             core_attn_out = super().forward(query, key, value, attention_mask, **_fa_kwargs)
 
         # Restore TE's CP group after dynamic CP forward.
-        if (
-            packed_seq_params is not None
-            and packed_seq_params.local_cp_size is not None
-            and self.config.context_parallel_size > 1
-        ):
+        if packed_seq_params is not None and packed_seq_params.local_cp_size is not None:
             super().set_context_parallel_group(
                 _te_orig_cp_group,
                 _te_orig_cp_global_ranks,

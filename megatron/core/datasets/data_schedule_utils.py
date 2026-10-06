@@ -663,6 +663,14 @@ def next_hdp_group_packing_aware(
 
         cp_size = min_needed
         while cp_size <= total_gpus:
+            # Disabled sketch: first plumb resolved TP-local Q/K/V head counts
+            # from every pure-a2a layer; do not infer them as global heads // TP
+            # (KV replication and MLA need their actual attention head counts).
+            # pure_a2a_local_heads is empty for p2p; GDN/linear CP and a2a+p2p
+            # need separate handling. Before enabling, also constrain/test the
+            # initial placement, empty-rank expansion, and full-group fallback.
+            # if any(heads % cp_size for heads in pure_a2a_local_heads):
+            #     break  # Doubling an invalid divisor cannot make it valid.
             per_gpu_cost = workload(seq_len, cp_size)
 
             for group_id, size in list(group_size.items()):
