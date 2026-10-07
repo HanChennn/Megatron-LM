@@ -132,6 +132,7 @@ class GatedDeltaNet(_GDNBase):
             cp_group_chunkwise = cp_group
             cp_group_headwise = None
         elif self.config.linear_cp_mode == "headwise":
+            self._validate_headwise_cp(cp_group.size())
             cp_group_chunkwise = None
             cp_group_headwise = cp_group
         elif cp_group.size() == 1:

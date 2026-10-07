@@ -187,7 +187,7 @@ class _GDNBase(MegatronModule):
         assert pg_collection is not None, "pg_collection must be provided for a GDN-family layer"
         self.pg_collection = pg_collection
         self.tp_group = pg_collection.tp
-        # Static/max CP size from model construction. Runtime dynamic CP paths must resolve
+        # CP size from model construction. Runtime dynamic CP paths must resolve
         # the effective group from packed_seq_params instead of using this value.
         self.cp_size = self.pg_collection.cp.size()
         self.tp_size = self.pg_collection.tp.size()
@@ -208,23 +208,10 @@ class _GDNBase(MegatronModule):
         self.qk_dim_local_tp = self.qk_dim // self.tp_size
         self.v_dim_local_tp = self.v_dim // self.tp_size
 
-        # Headwise CP shards heads over the CP group; chunkwise CP keeps heads local.
-        if self.config.linear_cp_mode == "headwise":
-            num_key_heads_per_tp = self.num_key_heads // self.tp_size
-            num_value_heads_per_tp = self.num_value_heads // self.tp_size
-            assert num_key_heads_per_tp % self.cp_size == 0, (
-                f"GDN-family head-parallel CP requires the static (max) cp_size ({self.cp_size}) "
-                f"to evenly divide num_key_heads per TP rank ({num_key_heads_per_tp}); "
-                f"all runtime dynamic cp_size values divide the static one and so will also divide."
-            )
-            assert num_value_heads_per_tp % self.cp_size == 0, (
-                f"GDN-family head-parallel CP requires the static (max) cp_size ({self.cp_size}) "
-                f"to evenly divide num_value_heads per TP rank ({num_value_heads_per_tp}); "
-                f"all runtime dynamic cp_size values divide the static one and so will also divide."
-            )
-
         self.num_v_heads_local_tp = self.num_value_heads // self.tp_size
         self.num_k_heads_local_tp = self.num_key_heads // self.tp_size
+        if not config.dynamic_context_parallel:
+            self._validate_headwise_cp(self.cp_size)
 
         attrs_to_check = (
             "dt_bias_dim",
@@ -337,6 +324,22 @@ class _GDNBase(MegatronModule):
         self._chunkwise_cp_context_cache: dict[tuple[int, int], tuple[torch.Tensor, object]] = {}
 
         self.reset_parameters()
+
+    def _validate_headwise_cp(self, cp_size: int) -> None:
+        """Check resolved head counts before headwise CP communication; chunkwise is exempt."""
+        if self.config.linear_cp_mode == "headwise" and (
+            self.num_k_heads_local_tp % cp_size or self.num_v_heads_local_tp % cp_size
+        ):
+            raise ValueError(
+                "linear_cp_mode='headwise' requires TP-local key and value head counts "
+                "to be divisible by the effective CP group size. "
+                f"TP={self.tp_size}, local_key_heads={self.num_k_heads_local_tp}, "
+                f"local_value_heads={self.num_v_heads_local_tp}, "
+                f"configured_cp_size={self.config.context_parallel_size}, "
+                f"effective_cp_size={cp_size}. "
+                "Choose a compatible TP/CP configuration or explicitly select "
+                "linear_cp_mode='chunkwise'."
+            )
 
     def _setup_variant_attrs(self):
         """Set variant projection sections, gate parameter sizes, and kernel callable.

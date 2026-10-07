@@ -1979,7 +1979,8 @@ class TransformerConfig(ModelParallelConfig):
             # Check tensor parallelism compatibility. Headwise CP splits linear-attention heads
             # across CP ranks; chunkwise CP keeps all TP-local heads on each CP rank.
             linear_head_parallel_size = self.tensor_model_parallel_size
-            if self.context_parallel_size > 1 and self.linear_cp_mode == "headwise":
+            # Dynamic CP validates head divisibility against the runtime group in the layer.
+            if self.linear_cp_mode == "headwise" and not self.dynamic_context_parallel:
                 linear_head_parallel_size *= self.context_parallel_size
             assert self.linear_num_key_heads % linear_head_parallel_size == 0, (
                 f"{self.linear_num_key_heads=} must be a multiple of "

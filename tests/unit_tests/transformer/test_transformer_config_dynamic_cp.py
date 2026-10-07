@@ -208,21 +208,27 @@ def test_static_cp1_preserves_existing_validation(overrides, error):
         _make_config(context_parallel_size=1, dynamic_context_parallel=False, **overrides)
 
 
+@pytest.mark.parametrize("variant", ["gdn", "kda"])
 @pytest.mark.parametrize(
     ("tp_size", "cp_size", "dynamic_cp", "linear_heads", "error"),
     [
         (1, 1, False, 1, False),
         (1, 1, True, 1, False),
         (1, 2, False, 1, True),
-        (1, 2, True, 1, True),
+        (1, 2, True, 1, False),
         (1, 2, False, 2, False),
         (1, 2, True, 2, False),
         (2, 1, True, 1, True),
-        (2, 2, True, 2, True),
+        (2, 2, True, 2, False),
         (2, 2, True, 4, False),
+        (1, 8, True, 4, False),
+        (1, 8, False, 4, True),
+        (2, 8, True, 3, True),
     ],
 )
-def test_head_divisibility_uses_configured_cp(tp_size, cp_size, dynamic_cp, linear_heads, error):
+def test_head_divisibility_defers_dynamic_cp(
+    variant, tp_size, cp_size, dynamic_cp, linear_heads, error
+):
     with (
         pytest.raises(AssertionError, match="must be a multiple of linear_head_parallel_size")
         if error
@@ -232,7 +238,7 @@ def test_head_divisibility_uses_configured_cp(tp_size, cp_size, dynamic_cp, line
             tensor_model_parallel_size=tp_size,
             context_parallel_size=cp_size,
             dynamic_context_parallel=dynamic_cp,
-            experimental_attention_variant="gdn",
+            experimental_attention_variant=variant,
             linear_cp_mode="headwise",
             linear_num_key_heads=linear_heads,
             linear_num_value_heads=linear_heads,
