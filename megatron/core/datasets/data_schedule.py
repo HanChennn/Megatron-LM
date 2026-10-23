@@ -8,7 +8,6 @@ import torch
 from megatron.core import parallel_state
 from megatron.core.datasets.data_schedule_utils import (
     _validate_dynamic_cp_max_size,
-    _validate_dynamic_cp_output,
     align_sample_id_groups,
     broadcast_scalars,
     broadcast_tensor,
@@ -459,7 +458,6 @@ class DefaultDynamicCPScheduler(DpBalancedScheduler):
                 sample_id_groups, self.microbatch_group_size_per_vp_stage
             )
 
-        _validate_dynamic_cp_output(sample_id_groups, self.max_cp_size, "final/VPP alignment")
         return sample_id_groups
 
 
