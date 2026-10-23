@@ -7,6 +7,8 @@ import torch
 
 from megatron.core import parallel_state
 from megatron.core.datasets.data_schedule_utils import (
+    _validate_dynamic_cp_max_size,
+    _validate_dynamic_cp_output,
     align_sample_id_groups,
     broadcast_scalars,
     broadcast_tensor,
@@ -419,12 +421,14 @@ class DefaultDynamicCPScheduler(DpBalancedScheduler):
     Dynamic CP scheduler that balances workload across variable CP sizes.
     """
 
-    def __init__(self, *args, min_cp_size=1, **kwargs):
+    def __init__(self, *args, min_cp_size=1, max_cp_size=None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.is_dynamic_cp = True
         self.max_seq_len_per_rank = self.max_seqlen_per_dp_cp_rank
         self.total_hdp_gpus = self.dp_size * self.cp_size
         self.min_cp_size = min_cp_size
+        _validate_dynamic_cp_max_size(max_cp_size, min_cp_size, self.total_hdp_gpus)
+        self.max_cp_size = max_cp_size
 
     def get_groups_and_subsamples(self, sample_id_seqlens):
         """
@@ -443,6 +447,7 @@ class DefaultDynamicCPScheduler(DpBalancedScheduler):
                 self.total_hdp_gpus,
                 max_seq_len_per_rank=mslpr,
                 min_cp_size=min_cp,
+                max_cp_size=self.max_cp_size,
             )
             sample_id_groups.append(sample_ids)
 
@@ -454,6 +459,7 @@ class DefaultDynamicCPScheduler(DpBalancedScheduler):
                 sample_id_groups, self.microbatch_group_size_per_vp_stage
             )
 
+        _validate_dynamic_cp_output(sample_id_groups, self.max_cp_size, "final/VPP alignment")
         return sample_id_groups
 
 
@@ -541,6 +547,11 @@ def wrap_data_iterator(
     scheduler_kwargs = {}
     if scheduler_type == 'default_dynamic_cp':
         scheduler_kwargs['min_cp_size'] = config.min_dynamic_context_parallel_size
+        scheduler_kwargs["max_cp_size"] = (
+            getattr(config, "max_cp_size", None)
+            if getattr(config, "dynamic_context_parallel", False)
+            else None
+        )
 
     scheduler_max_num_seqs = (
         _get_scheduler_max_real_num_seqs(config)
